@@ -1,0 +1,92 @@
+﻿using System;
+using System.Linq;
+using System.Threading.Tasks;
+using AutoMapper;
+using Microsoft.ApplicationInsights;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.eShopWeb.ApplicationCore.Entities;
+using Microsoft.eShopWeb.ApplicationCore.Interfaces;
+using Microsoft.eShopWeb.ApplicationCore.Specifications;
+using Microsoft.Extensions.Logging;
+using MinimalApi.Endpoint;
+
+namespace Microsoft.eShopWeb.PublicApi.CatalogItemEndpoints;
+
+/// <summary>
+/// List Catalog Items (paged)
+/// </summary>
+public class CatalogItemListPagedEndpoint : IEndpoint<IResult, ListPagedCatalogItemRequest>
+{
+    private IRepository<CatalogItem> _itemRepository;
+    private readonly IUriComposer _uriComposer;
+    private readonly IMapper _mapper;
+    private readonly ILogger<CatalogItemListPagedEndpoint> _logger;
+
+    public CatalogItemListPagedEndpoint(IUriComposer uriComposer, IMapper mapper, ILogger<CatalogItemListPagedEndpoint> logger)
+    {
+        _uriComposer = uriComposer;
+        _mapper = mapper;
+        _logger = logger;
+    }
+
+    public void AddRoute(IEndpointRouteBuilder app)
+    {
+        app.MapGet("api/catalog-items",
+            async (int? pageSize, int? pageIndex, int? catalogBrandId, int? catalogTypeId, IRepository<CatalogItem> itemRepository) =>
+            {
+                _itemRepository = itemRepository;
+                return await HandleAsync(new ListPagedCatalogItemRequest(pageSize, pageIndex, catalogBrandId, catalogTypeId));
+            })            
+            .Produces<ListPagedCatalogItemResponse>()
+            .WithTags("CatalogItemEndpoints");
+    }
+
+    public async Task<IResult> HandleAsync(ListPagedCatalogItemRequest request)
+    {
+        var response = new ListPagedCatalogItemResponse(request.CorrelationId());
+
+        var filterSpec = new CatalogFilterSpecification(request.CatalogBrandId, request.CatalogTypeId);
+        int totalItems = await _itemRepository.CountAsync(filterSpec);
+
+        var pagedSpec = new CatalogFilterPaginatedSpecification(
+            skip: request.PageIndex.Value * request.PageSize.Value,
+            take: request.PageSize.Value,
+            brandId: request.CatalogBrandId,
+            typeId: request.CatalogTypeId);
+
+        var items = await _itemRepository.ListAsync(pagedSpec);
+
+        _logger.LogInformation($"Info: CatalogItemListPagedEndpoint: total items to return:{items.Count}");
+        _logger.LogDebug($"Debug: CatalogItemListPagedEndpoint: total items to return:{items.Count}");
+        _logger.LogWarning($"Warning: CatalogItemListPagedEndpoint: total items to return:{items.Count}");
+        //Convert.ToInt32("123a");
+        if (!items.Any()) 
+        {
+            var ex = new Exception("Controller: Cannot move further");
+
+            //var ai = new TelemetryClient(new ApplicationInsights.Extensibility.TelemetryConfiguration { ConnectionString = "InstrumentationKey = 7055d887 - 1c4a - 4ce9 - bd84 - 38cbc4ee003b; IngestionEndpoint = https://westeurope-5.in.applicationinsights.azure.com/;LiveEndpoint=https://westeurope.livediagnostics.monitor.azure.com/" });
+            //ai.TrackException(ex);
+            _logger.LogError(ex,"CatalogItemListPagedEndpoint: No any items to return");
+            throw ex;
+        }
+
+        response.CatalogItems.AddRange(items.Select(_mapper.Map<CatalogItemDto>));
+        foreach (CatalogItemDto item in response.CatalogItems)
+        {
+            item.PictureUri = _uriComposer.ComposePicUri(item.PictureUri);
+        }
+
+        if (request.PageSize > 0)
+        {
+            response.PageCount = int.Parse(Math.Ceiling((decimal)totalItems / request.PageSize.Value).ToString());
+        }
+        else
+        {
+            response.PageCount = totalItems > 0 ? 1 : 0;
+        }
+
+        return Results.Ok(response);
+    }
+}
